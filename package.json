@@ -1,0 +1,25 @@
+{
+	"name": "@leavepulse/sdk-nuxt",
+	"version": "0.0.1",
+	"description": "Nuxt transport for the LeavePulse SDK: SSR cookie forwarding, CSRF, per-channel routing, and refresh-on-401 over the generic SDK runtime.",
+	"type": "module",
+	"module": "index.ts",
+	"types": "index.ts",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/LeavePulse/leavepulse-sdk-nuxt.git"
+	},
+	"publishConfig": {
+		"registry": "https://npm.pkg.github.com"
+	},
+	"exports": {
+		".": "./index.ts"
+	},
+	"peerDependencies": {
+		"@leavepulse/sdk": ">=0.3.0",
+		"h3": ">=1.0.0",
+		"nuxt": ">=3.0.0"
+	},
+	"sideEffects": false,
+	"license": "UNLICENSED"
+}
