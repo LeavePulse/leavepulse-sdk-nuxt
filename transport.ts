@@ -39,14 +39,21 @@ const CHANNEL_RUNTIME_KEYS: Record<
 	auth: { internal: "authInternalBase", public: "authApiBase" },
 };
 
-const SESSION_COOKIES = [
-	"__Host-rt",
-	"__Secure-rt",
-	"rt",
-	"__Host-csrf",
-	"__Secure-csrf",
-	"csrf",
-];
+const RT_COOKIES = ["__Host-rt", "__Secure-rt", "rt"];
+const CSRF_COOKIES = ["__Host-csrf", "__Secure-csrf", "csrf"];
+const SESSION_COOKIES = [...RT_COOKIES, ...CSRF_COOKIES];
+
+/** First `name=value` pair present among `names`, or undefined. */
+function pickCookie(
+	cookies: Record<string, string | undefined>,
+	names: string[],
+): { name: string; value: string } | undefined {
+	for (const name of names) {
+		const value = cookies[name];
+		if (value) return { name, value };
+	}
+	return undefined;
+}
 
 function errorStatus(error: unknown): number | undefined {
 	const candidate = (error as { status?: unknown; statusCode?: unknown }) ?? {};
@@ -148,45 +155,45 @@ export class NuxtTransport implements Transport {
 	constructor(private readonly opts: NuxtTransportOptions = {}) {}
 
 	async request<T>(req: TransportRequest): Promise<T> {
-		const path = buildPath(req);
-		const body = resolveBody(req);
-		return this.requestWithRefresh(() =>
-			this.fetchWithAuth<T>(req.method, path, body),
-		);
+		return this.requestWithRefresh(async () => {
+			const ctx = this.createFetchContext(buildPath(req));
+			return (await $fetch(ctx.requestUrl, this.fetchOptions(req, ctx))) as T;
+		});
 	}
 
 	async conditional<T>(req: TransportRequest): Promise<ConditionalResult<T>> {
-		const path = buildPath(req);
-		const body = resolveBody(req);
-		return this.requestWithRefresh(() =>
-			this.conditionalFetch<T>(req.method, path, body, req.ifNoneMatch),
-		);
+		return this.requestWithRefresh(async () => {
+			const ctx = this.createFetchContext(buildPath(req));
+			if (req.ifNoneMatch) ctx.headers["If-None-Match"] = req.ifNoneMatch;
+			const response = await $fetch.raw(ctx.requestUrl, {
+				...this.fetchOptions(req, ctx),
+				ignoreResponseError: true,
+			});
+			if (response.status === 404) return { status: "not_found" };
+			const etag = response.headers.get("etag") ?? undefined;
+			if (response.status === 304) return { status: "not_modified", etag };
+			return { status: "modified", data: response._data as T, etag };
+		});
 	}
 
-	private async conditionalFetch<T>(
-		method: string,
-		url: string,
-		body: unknown,
-		ifNoneMatch: string | undefined,
-	): Promise<ConditionalResult<T>> {
-		const { requestUrl, headers, isAuthTarget, base, requestEvent } =
-			this.createFetchContext(url);
-		if (ifNoneMatch) headers["If-None-Match"] = ifNoneMatch;
-		const response = await $fetch.raw(requestUrl, {
-			...(base ? { baseURL: base } : {}),
-			method: method as never,
-			body: body as never,
-			headers,
-			credentials: "include",
-			ignoreResponseError: true,
+	private fetchOptions(
+		req: TransportRequest,
+		ctx: ReturnType<typeof this.createFetchContext>,
+	) {
+		return {
+			...(ctx.base ? { baseURL: ctx.base } : {}),
+			method: req.method as never,
+			body: resolveBody(req) as never,
+			headers: ctx.headers,
+			credentials: "include" as const,
 			parseResponse: parseJson,
-			onResponse: ({ response }) =>
-				this.forwardSetCookieHeaders(requestEvent, isAuthTarget, response),
-		});
-		if (response.status === 404) return { status: "not_found" };
-		const etag = response.headers.get("etag") ?? undefined;
-		if (response.status === 304) return { status: "not_modified", etag };
-		return { status: "modified", data: response._data as T, etag };
+			onResponse: ({ response }: { response: { headers: unknown } }) =>
+				this.forwardSetCookieHeaders(
+					ctx.requestEvent,
+					ctx.isAuthTarget,
+					response,
+				),
+		};
 	}
 
 	private resolveChannel(url: string): ApiChannel {
@@ -245,37 +252,23 @@ export class NuxtTransport implements Transport {
 
 		const isAuthTarget = target.channel === "auth";
 
-		if (import.meta.server && requestEvent) {
+		if (import.meta.server && requestEvent && isAuthTarget) {
 			const cookies = parseCookies(requestEvent);
-			const rtCookie = [
-				["__Host-rt", cookies["__Host-rt"]],
-				["__Secure-rt", cookies["__Secure-rt"]],
-				["rt", cookies.rt],
-			].find(([, value]) => value);
-			const csrfCookie = [
-				["__Host-csrf", cookies["__Host-csrf"]],
-				["__Secure-csrf", cookies["__Secure-csrf"]],
-				["csrf", cookies.csrf],
-			].find(([, value]) => value);
-
-			const cookieParts: string[] = [];
-			if (rtCookie) cookieParts.push(`${rtCookie[0]}=${rtCookie[1]}`);
-			if (csrfCookie) cookieParts.push(`${csrfCookie[0]}=${csrfCookie[1]}`);
-
-			if (isAuthTarget && cookieParts.length > 0) {
-				headers.Cookie = cookieParts.join("; ");
+			const rt = pickCookie(cookies, RT_COOKIES);
+			const csrf = pickCookie(cookies, CSRF_COOKIES);
+			const parts = [rt, csrf]
+				.filter((c): c is { name: string; value: string } => Boolean(c))
+				.map((c) => `${c.name}=${c.value}`);
+			if (parts.length > 0) {
+				headers.Cookie = parts.join("; ");
 				headers["X-Auth-Client"] = "web";
-				if (csrfCookie) headers["X-CSRF-Token"] = csrfCookie[1] ?? "";
+				if (csrf) headers["X-CSRF-Token"] = csrf.value;
 			}
 		}
 
 		if (import.meta.client) {
 			headers["X-Auth-Client"] = "web";
-			const csrfToken = getCookieValueAny([
-				"csrf",
-				"__Host-csrf",
-				"__Secure-csrf",
-			]);
+			const csrfToken = getCookieValueAny(CSRF_COOKIES);
 			if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
 		}
 		if (auth?.accessJwt) {
@@ -316,25 +309,6 @@ export class NuxtTransport implements Transport {
 				return;
 			}
 		}
-	}
-
-	private async fetchWithAuth<T>(
-		method: string,
-		url: string,
-		body?: unknown,
-	): Promise<T> {
-		const { requestUrl, headers, isAuthTarget, base, requestEvent } =
-			this.createFetchContext(url);
-		return (await $fetch(requestUrl, {
-			...(base ? { baseURL: base } : {}),
-			method: method as never,
-			body: body as never,
-			headers,
-			credentials: "include",
-			parseResponse: parseJson,
-			onResponse: ({ response }) =>
-				this.forwardSetCookieHeaders(requestEvent, isAuthTarget, response),
-		})) as T;
 	}
 
 	private async requestWithRefresh<T>(attempt: () => Promise<T>): Promise<T> {
