@@ -1,5 +1,3 @@
-import { appendHeader, parseCookies } from "h3";
-import { useNuxtApp, useRequestEvent, useRuntimeConfig } from "#imports";
 import {
 	buildFormData,
 	buildPath,
@@ -8,6 +6,8 @@ import {
 	type Transport,
 	type TransportRequest,
 } from "@leavepulse/sdk";
+import { appendHeader, getRequestHeader, getRequestIP, parseCookies } from "h3";
+import { useNuxtApp, useRequestEvent, useRuntimeConfig } from "#imports";
 
 type ApiChannel = "platform" | "auth";
 
@@ -104,6 +104,29 @@ function safeUseRequestEvent() {
 	if (!import.meta.server) return undefined;
 	try {
 		return useRequestEvent();
+	} catch {
+		return undefined;
+	}
+}
+
+/** Best-effort real client IP from the incoming SSR request, to forward to the
+ * upstream API. Mirrors the server-side resolution order (proxy headers first,
+ * then the forwarded chain, then the socket). */
+function resolveForwardedClientIp(
+	event: ReturnType<typeof safeUseRequestEvent>,
+): string | undefined {
+	if (!event) return undefined;
+	for (const name of ["cf-connecting-ip", "true-client-ip", "x-real-ip"]) {
+		const value = getRequestHeader(event, name);
+		if (value?.trim()) return value.trim();
+	}
+	const forwardedFor = getRequestHeader(event, "x-forwarded-for");
+	if (forwardedFor) {
+		const first = forwardedFor.split(",")[0]?.trim();
+		if (first) return first;
+	}
+	try {
+		return getRequestIP(event, { xForwardedFor: true }) ?? undefined;
 	} catch {
 		return undefined;
 	}
@@ -263,6 +286,18 @@ export class NuxtTransport implements Transport {
 				headers.Cookie = parts.join("; ");
 				headers["X-Auth-Client"] = "web";
 				if (csrf) headers["X-CSRF-Token"] = csrf.value;
+			}
+		}
+
+		// SSR: the upstream API sees the Nuxt server's socket, not the browser.
+		// Forward the real client IP so per-IP logic (rate limiting, audit) keys
+		// on the user, not on the shared Nuxt host — otherwise every visitor
+		// shares one bucket and trips the limiter together (429 storms on login).
+		if (import.meta.server && requestEvent) {
+			const clientIp = resolveForwardedClientIp(requestEvent);
+			if (clientIp) {
+				headers["X-Forwarded-For"] = clientIp;
+				headers["X-Real-IP"] = clientIp;
 			}
 		}
 
