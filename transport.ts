@@ -175,30 +175,52 @@ function readLocale(value: unknown): string | undefined {
 
 /** Nuxt `Transport`: SSR cookie/CSRF, per-channel routing, refresh-on-401. */
 export class NuxtTransport implements Transport {
+	// The Nuxt app captured synchronously at construction (inside useSdk(), which
+	// runs in setup context). Nuxt composables like useRuntimeConfig /
+	// useRequestEvent / useNuxtApp lose the active instance after `await` on the
+	// server, so requests made deep in an async chain (e.g. resolve() inside
+	// ensureProject) would throw "[nuxt] instance unavailable". Running the work
+	// through runWithContext() restores the instance for those composables.
+	private readonly nuxtApp = (() => {
+		try {
+			return useNuxtApp();
+		} catch {
+			return undefined;
+		}
+	})();
+
 	constructor(private readonly opts: NuxtTransportOptions = {}) {}
+
+	private withContext<T>(fn: () => Promise<T>): Promise<T> {
+		return this.nuxtApp ? this.nuxtApp.runWithContext(fn) : fn();
+	}
 
 	async request<T>(req: TransportRequest): Promise<T> {
 		const path = buildPath(req);
-		return this.requestWithRefresh(path, async () => {
-			const ctx = this.createFetchContext(path);
-			return (await $fetch(ctx.requestUrl, this.fetchOptions(req, ctx))) as T;
-		});
+		return this.withContext(() =>
+			this.requestWithRefresh(path, async () => {
+				const ctx = this.createFetchContext(path);
+				return (await $fetch(ctx.requestUrl, this.fetchOptions(req, ctx))) as T;
+			}),
+		);
 	}
 
 	async conditional<T>(req: TransportRequest): Promise<ConditionalResult<T>> {
 		const path = buildPath(req);
-		return this.requestWithRefresh(path, async () => {
-			const ctx = this.createFetchContext(path);
-			if (req.ifNoneMatch) ctx.headers["If-None-Match"] = req.ifNoneMatch;
-			const response = await $fetch.raw(ctx.requestUrl, {
-				...this.fetchOptions(req, ctx),
-				ignoreResponseError: true,
-			});
-			if (response.status === 404) return { status: "not_found" };
-			const etag = response.headers.get("etag") ?? undefined;
-			if (response.status === 304) return { status: "not_modified", etag };
-			return { status: "modified", data: response._data as T, etag };
-		});
+		return this.withContext(() =>
+			this.requestWithRefresh(path, async () => {
+				const ctx = this.createFetchContext(path);
+				if (req.ifNoneMatch) ctx.headers["If-None-Match"] = req.ifNoneMatch;
+				const response = await $fetch.raw(ctx.requestUrl, {
+					...this.fetchOptions(req, ctx),
+					ignoreResponseError: true,
+				});
+				if (response.status === 404) return { status: "not_found" };
+				const etag = response.headers.get("etag") ?? undefined;
+				if (response.status === 304) return { status: "not_modified", etag };
+				return { status: "modified", data: response._data as T, etag };
+			}),
+		);
 	}
 
 	private fetchOptions(
