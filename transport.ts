@@ -178,15 +178,17 @@ export class NuxtTransport implements Transport {
 	constructor(private readonly opts: NuxtTransportOptions = {}) {}
 
 	async request<T>(req: TransportRequest): Promise<T> {
-		return this.requestWithRefresh(async () => {
-			const ctx = this.createFetchContext(buildPath(req));
+		const path = buildPath(req);
+		return this.requestWithRefresh(path, async () => {
+			const ctx = this.createFetchContext(path);
 			return (await $fetch(ctx.requestUrl, this.fetchOptions(req, ctx))) as T;
 		});
 	}
 
 	async conditional<T>(req: TransportRequest): Promise<ConditionalResult<T>> {
-		return this.requestWithRefresh(async () => {
-			const ctx = this.createFetchContext(buildPath(req));
+		const path = buildPath(req);
+		return this.requestWithRefresh(path, async () => {
+			const ctx = this.createFetchContext(path);
 			if (req.ifNoneMatch) ctx.headers["If-None-Match"] = req.ifNoneMatch;
 			const response = await $fetch.raw(ctx.requestUrl, {
 				...this.fetchOptions(req, ctx),
@@ -221,6 +223,10 @@ export class NuxtTransport implements Transport {
 
 	private resolveChannel(url: string): ApiChannel {
 		return url.startsWith("/auth/") || url === "/auth" ? "auth" : "platform";
+	}
+
+	private shouldBypassAutoRefresh(url: string): boolean {
+		return url === "/auth/refresh";
 	}
 
 	private resolveTarget(url: string) {
@@ -346,11 +352,14 @@ export class NuxtTransport implements Transport {
 		}
 	}
 
-	private async requestWithRefresh<T>(attempt: () => Promise<T>): Promise<T> {
+	private async requestWithRefresh<T>(
+		url: string,
+		attempt: () => Promise<T>,
+	): Promise<T> {
 		const auth = this.opts.auth;
 		const requestEvent = safeUseRequestEvent();
 
-		if (!auth) return attempt();
+		if (!auth || this.shouldBypassAutoRefresh(url)) return attempt();
 
 		if (import.meta.client && auth.isRestoring && !auth.isRefreshing) {
 			try {
