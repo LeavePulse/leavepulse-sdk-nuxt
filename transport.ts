@@ -383,7 +383,14 @@ export class NuxtTransport implements Transport {
 
 		if (!auth || this.shouldBypassAutoRefresh(url)) return attempt();
 
-		if (import.meta.client && auth.isRestoring && !auth.isRefreshing) {
+		// Restoring (user hydrated from SSR but no usable access token yet):
+		// refresh BEFORE attempting. If a refresh is already in flight, await it
+		// rather than skipping — auth.refresh() dedupes onto the in-flight promise,
+		// so a burst of protected requests on first load all wait for the one
+		// refresh instead of racing it and firing token-less (the cold-load 401
+		// that left admin pages blank). The /auth/refresh call itself is bypassed
+		// above, so this can't recurse.
+		if (import.meta.client && auth.isRestoring) {
 			try {
 				await auth.refresh();
 			} catch {
@@ -397,11 +404,11 @@ export class NuxtTransport implements Transport {
 			const canAttemptRefresh = import.meta.server
 				? hasServerSessionCookies(requestEvent)
 				: hasClientSessionCookies() || !!auth.refreshToken;
-			if (
-				errorStatus(error) === 401 &&
-				canAttemptRefresh &&
-				!auth.isRefreshing
-			) {
+			if (errorStatus(error) === 401 && canAttemptRefresh) {
+				// Recover a single 401: refresh (awaiting any in-flight one) and
+				// retry once. Dropping the prior !isRefreshing guard means requests
+				// that 401 while a refresh is mid-flight now wait for it and retry,
+				// instead of giving up and surfacing the 401 to the caller.
 				await auth.refresh();
 				return await attempt();
 			}

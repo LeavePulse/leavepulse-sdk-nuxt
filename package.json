@@ -1,6 +1,6 @@
 {
 	"name": "@leavepulse/sdk-nuxt",
-	"version": "0.0.5",
+	"version": "0.0.6",
 	"description": "Nuxt transport for the LeavePulse SDK: SSR cookie forwarding, CSRF, per-channel routing, and refresh-on-401 over the generic SDK runtime.",
 	"type": "module",
 	"module": "index.ts",
