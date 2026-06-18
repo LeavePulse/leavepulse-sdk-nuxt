@@ -72,11 +72,21 @@ function baseHasV1Prefix(base: string): boolean {
 function shouldUseLocalDevProxy(): boolean {
 	if (!import.meta.client) return false;
 	const { hostname, protocol } = window.location;
+	if (!protocol.startsWith("http")) return false;
+	// Route through the Nuxt /api/_lp proxy for any non-production origin: not
+	// just localhost, but also bare-IP / LAN access (e.g.
+	// http://100.112.136.114:3001 over Tailscale). A direct call from such an
+	// origin trips the gateway's CORS allowlist; the proxy presents a trusted
+	// origin and rewrites cookies to host-only. The signal is "served over
+	// plain http", plus the localhost/.local/IP cases for completeness.
 	const isLocalHost =
 		hostname === "127.0.0.1" ||
 		hostname === "localhost" ||
-		hostname.endsWith(".localhost");
-	return isLocalHost && protocol.startsWith("http");
+		hostname.endsWith(".localhost") ||
+		hostname.endsWith(".local");
+	const isIpHost =
+		/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) || hostname.includes(":");
+	return isLocalHost || isIpHost || protocol === "http:";
 }
 
 function getCookieValue(name: string): string | null {
