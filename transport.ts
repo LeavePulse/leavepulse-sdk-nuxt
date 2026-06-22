@@ -29,6 +29,16 @@ export type NuxtTransportOptions = {
 	/** Auth bridge; omit for unauthenticated transports (public calls). */
 	auth?: AuthBridge;
 	baseURL?: string;
+	/**
+	 * The `X-Auth-Client` hint sent to auth-service, which picks the session
+	 * delivery strategy. Defaults to `"web"` — the cookie strategy used in
+	 * production (refresh rides in an HttpOnly cookie; the body `refresh_token`
+	 * is nulled). Set `"generic"` for apps that own the refresh token themselves
+	 * (e.g. stored client-side): auth-service then returns `refresh_token` in the
+	 * response body and issues no session cookie. Leave as `"web"` for prod web
+	 * frontends.
+	 */
+	authClient?: "web" | "generic";
 };
 
 const CHANNEL_RUNTIME_KEYS: Record<
@@ -201,6 +211,11 @@ export class NuxtTransport implements Transport {
 
 	constructor(private readonly opts: NuxtTransportOptions = {}) {}
 
+	/** Auth-service client hint; cookie strategy (`web`) unless the app opts out. */
+	private get authClient(): "web" | "generic" {
+		return this.opts.authClient ?? "web";
+	}
+
 	private withContext<T>(fn: () => Promise<T>): Promise<T> {
 		return this.nuxtApp ? this.nuxtApp.runWithContext(fn) : fn();
 	}
@@ -322,7 +337,7 @@ export class NuxtTransport implements Transport {
 				.map((c) => `${c.name}=${c.value}`);
 			if (parts.length > 0) {
 				headers.Cookie = parts.join("; ");
-				headers["X-Auth-Client"] = "web";
+				headers["X-Auth-Client"] = this.authClient;
 				if (csrf) headers["X-CSRF-Token"] = csrf.value;
 			}
 		}
@@ -340,7 +355,7 @@ export class NuxtTransport implements Transport {
 		}
 
 		if (import.meta.client) {
-			headers["X-Auth-Client"] = "web";
+			headers["X-Auth-Client"] = this.authClient;
 			const csrfToken = getCookieValueAny(CSRF_COOKIES);
 			if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
 		}
