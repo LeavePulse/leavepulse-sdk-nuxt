@@ -269,7 +269,12 @@ export class NuxtTransport implements Transport {
 	}
 
 	private resolveChannel(url: string): ApiChannel {
-		return url.startsWith("/auth/") || url === "/auth" ? "auth" : "platform";
+		// Auth-service endpoints route to the auth channel whether or not they
+		// carry the `/v1` prefix: resource methods are inconsistent (login sends
+		// `/auth/login`, me.issueWsToken sends `/v1/auth/ws-token`), so match the
+		// auth path with an optional leading `/v1`.
+		const path = url.replace(/^\/v1(?=\/|$)/, "");
+		return path.startsWith("/auth/") || path === "/auth" ? "auth" : "platform";
 	}
 
 	private shouldBypassAutoRefresh(url: string): boolean {
@@ -318,8 +323,12 @@ export class NuxtTransport implements Transport {
 		const auth = this.opts.auth;
 		const requestEvent = safeUseRequestEvent();
 		const target = this.resolveTarget(url);
+		// Auth endpoints live under /auth/* on auth-service (no /v1), so strip a
+		// leading /v1 for the auth channel; for platform, strip only when the base
+		// already carries the /v1 prefix (avoids a doubled /v1).
 		const requestUrl =
-			target.channel === "platform" && target.baseHasPlatformPrefix
+			target.channel === "auth" ||
+			(target.channel === "platform" && target.baseHasPlatformPrefix)
 				? url.replace(/^\/v1(?=\/|$)/, "") || "/"
 				: url;
 		const headers: Record<string, string> = {};
