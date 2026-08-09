@@ -10,7 +10,8 @@
 		"url": "git+https://github.com/LeavePulse/leavepulse-sdk-nuxt.git"
 	},
 	"publishConfig": {
-		"registry": "https://npm.pkg.github.com"
+		"registry": "https://registry.npmjs.org",
+		"access": "public"
 	},
 	"exports": {
 		".": "./index.ts"
